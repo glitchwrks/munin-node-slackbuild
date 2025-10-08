@@ -69,7 +69,7 @@ patch Makefile.config < $CWD/patches/Makefile.config.patch
 export PERL5LIB=.
 make -j1 LIBDIR=/usr/lib
 make -j1 install-common-prime install-node-prime \
-	install-plugins-prime LIBDIR=$PKG/usr/lib DESTDIR=$PKG
+	install-plugins-prime LIBDIR=$PKG/usr/lib/munin DESTDIR=$PKG
 
 find $PKG/usr/man -type f -exec gzip -9 {} \;
 for i in $( find $PKG/usr/man -type l ) ; do ln -s $( readlink $i ).gz $i.gz ; rm $i ; done
