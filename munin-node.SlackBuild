@@ -64,12 +64,12 @@ find -L . \
 # Patch Makefile.config for Slackware-esque install locations
 patch Makefile.config < $CWD/patches/Makefile.config.patch
 
-# 20220212 bkw: Note: plugins are in /usr/lib/plugins, regardless of
+# 20220212 bkw: Note: plugins are in /usr/lib/munin/plugins, regardless of
 # build architecture, because this is noarch.
 export PERL5LIB=.
-make -j1 LIBDIR=/usr/lib
+make -j1
 make -j1 install-common-prime install-node-prime \
-	install-plugins-prime LIBDIR=$PKG/usr/lib/munin DESTDIR=$PKG
+	install-plugins-prime DESTDIR=$PKG
 
 find $PKG/usr/man -type f -exec gzip -9 {} \;
 for i in $( find $PKG/usr/man -type l ) ; do ln -s $( readlink $i ).gz $i.gz ; rm $i ; done
