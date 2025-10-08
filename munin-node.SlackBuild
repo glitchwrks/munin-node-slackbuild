@@ -52,7 +52,7 @@ rm -rf $PKG
 mkdir -p $TMP $PKG $OUTPUT
 cd $TMP
 rm -rf $ARCHIVE_NAME-$VERSION
-tar zxvf $CWD/"$ARCHIVE_NAME"_"$VERSION".tar.gz
+tar zxvf $CWD/"$ARCHIVE_NAME"-"$VERSION".tar.gz
 cd $ARCHIVE_NAME-$VERSION
 chown -R root:root .
 find -L . \
@@ -82,7 +82,7 @@ rm -rf $PKG/usr/local
 # the RST source in the doc/ dir, and include those in the package.
 PKGDOC=$PKG/usr/doc/$PRGNAM-$VERSION
 mkdir -p $PKGDOC
-cp -a COPYING ChangeLog HACKING.pod README UPGRADING* authors $PKGDOC
+cp -a COPYING ChangeLog HACKING.pod README UPGRADING* $PKGDOC
 cat $CWD/$PRGNAM.SlackBuild > $PKGDOC/$PRGNAM.SlackBuild
 
 # move config files to .new
