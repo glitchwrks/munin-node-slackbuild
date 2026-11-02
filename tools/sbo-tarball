@@ -1,0 +1,226 @@
+#!/bin/bash
+#
+# sbo-tarball: package this SlackBuild for submission to SlackBuilds.org.
+#
+# Builds $PRGNAM.tar.gz from the files git tracks, laid out and permissioned
+# the way SBo's upload form and sbolint expect, after checking for the
+# mistakes that get submissions bounced. Run it from anywhere in the repo:
+#
+#   tools/sbo-tarball            # check, then write ./$PRGNAM.tar.gz
+#   tools/sbo-tarball -n         # check only, write nothing
+#   tools/sbo-tarball -s FILE    # also check FILE against the .info MD5SUM
+#   tools/sbo-tarball -d         # allow uncommitted changes (not for upload)
+#
+# What goes in: every git-tracked file except hidden files, the tarball
+# itself, and this tools/ directory. Nothing untracked is ever packaged.
+#
+# Checks (errors stop the run; warnings don't):
+#   - the working tree is committed (the tarball must match a commit)
+#   - PRGNAM agrees across the directory, $PRGNAM.SlackBuild and .info
+#   - VERSION in the SlackBuild's default matches the .info
+#   - .info keys present, quoted and in SBo's order; MD5SUMs are 32 hex
+#   - slack-desc has exactly 11 "$PRGNAM:" lines of 71 characters or less
+#   - README lines are 72 characters or less (warning)
+#   - no CRLF line endings, no source archives, nothing over 100 KB
+#   - the finished tarball is under the upload form's 1 MB limit
+# Then, if sbolint (sbo-maintainer-tools) is installed, it runs on the
+# tarball too, and its errors and warnings stop the run as well.
+#
+# The tarball is reproducible: files are sorted, owned by root:root, and
+# dated to the last commit, so the same commit gives the same tarball.
+
+set -eu
+
+usage() { sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'; }
+
+DRY_RUN=no
+ALLOW_DIRTY=no
+SOURCE=""
+while getopts "nds:h" opt; do
+	case "$opt" in
+		n) DRY_RUN=yes ;;
+		d) ALLOW_DIRTY=yes ;;
+		s) SOURCE=$OPTARG ;;
+		h) usage; exit 0 ;;
+		*) usage >&2; exit 2 ;;
+	esac
+done
+
+TOP=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
+cd "$TOP"
+
+ERRORS=0
+WARNINGS=0
+error() { echo "ERROR: $*" >&2; ERRORS=$((ERRORS + 1)); }
+warn()  { echo "WARNING: $*" >&2; WARNINGS=$((WARNINGS + 1)); }
+
+# --- What we're packaging -------------------------------------------------
+
+infos=( *.info )
+if [ "${#infos[@]}" -ne 1 ] || [ ! -f "${infos[0]}" ]; then
+	echo "ERROR: expected exactly one .info file in $TOP" >&2
+	exit 1
+fi
+INFO=${infos[0]}
+PRGNAM=${INFO%.info}
+TARBALL=$PRGNAM.tar.gz
+
+FILES=()
+while IFS= read -r f; do
+	case "$f" in
+		.*|*/.*) continue ;;            # hidden files (.gitignore, ...)
+		"$TARBALL") continue ;;         # the previous tarball
+		tools/*) continue ;;            # this script
+	esac
+	FILES+=( "$f" )
+done < <(git ls-files)
+
+# --- Checks ----------------------------------------------------------------
+
+if [ "$ALLOW_DIRTY" = no ] && [ -n "$(git status --porcelain --untracked-files=no -- . ":(exclude)$TARBALL")" ]; then
+	error "uncommitted changes; commit first, so the tarball matches a commit (or -d to test)"
+fi
+
+for f in "$PRGNAM.SlackBuild" "$INFO" README slack-desc; do
+	[ -f "$f" ] || error "missing $f"
+done
+
+# .info: every key, quoted, in SBo's order
+KEYS="PRGNAM VERSION HOMEPAGE DOWNLOAD MD5SUM DOWNLOAD_x86_64 MD5SUM_x86_64 REQUIRES MAINTAINER EMAIL"
+found=$(grep -oE '^[A-Za-z_0-9]+=' "$INFO" | tr -d '=' | tr '\n' ' ' | sed 's/ $//')
+[ "$found" = "$KEYS" ] || error "$INFO keys are '$found', expected '$KEYS' in that order"
+# Each line is KEY="value", or the start, middle or end of a value split
+# across lines with a trailing backslash.
+while IFS= read -r line; do
+	if [[ "$line" =~ ^[A-Za-z_0-9]+=\"[^\"]*\"$ ]] ||
+	   [[ "$line" =~ ^[A-Za-z_0-9]+=\"[^\"]*\\$ ]] ||
+	   [[ "$line" =~ ^[[:space:]]+[^\"[:space:]][^\"]*\\$ ]] ||
+	   [[ "$line" =~ ^[[:space:]]+[^\"[:space:]][^\"]*\"$ ]]; then
+		continue
+	fi
+	error "$INFO: malformed line: $line"
+done < "$INFO"
+
+info() { # the value of a key from the .info, continuation lines joined
+	sed -e ':a' -e '/\\$/N; s/\\\n[[:space:]]*/ /; ta' "$INFO" |
+		sed -n "s/^$1=\"\(.*\)\"$/\1/p"
+}
+
+[ "$(info PRGNAM)" = "$PRGNAM" ] || error "$INFO PRGNAM is '$(info PRGNAM)', expected '$PRGNAM'"
+sb_prgnam=$(sed -n 's/^PRGNAM=\(.*\)$/\1/p' "$PRGNAM.SlackBuild" | tr -d '"')
+[ "$sb_prgnam" = "$PRGNAM" ] || error "$PRGNAM.SlackBuild PRGNAM is '$sb_prgnam'"
+
+VERSION=$(info VERSION)
+sb_version=$(sed -n 's/^VERSION=\${VERSION:-\(.*\)}$/\1/p' "$PRGNAM.SlackBuild")
+[ -n "$sb_version" ] || error "$PRGNAM.SlackBuild has no VERSION=\${VERSION:-...} line"
+[ "$sb_version" = "$VERSION" ] || error "VERSION is $VERSION in $INFO but $sb_version in $PRGNAM.SlackBuild"
+case "$VERSION" in *-*|*" "*) error "VERSION '$VERSION' contains '-' or a space" ;; esac
+
+for key in MD5SUM MD5SUM_x86_64; do
+	for sum in $(info $key); do
+		[[ "$sum" =~ ^[0-9a-f]{32}$ ]] || error "$key '$sum' isn't a 32-digit hex MD5"
+	done
+done
+if [ -n "$(info DOWNLOAD_x86_64)" ] && [ -z "$(info MD5SUM_x86_64)" ]; then
+	error "DOWNLOAD_x86_64 is set but MD5SUM_x86_64 is empty"
+fi
+if [ "$(info DOWNLOAD | wc -w)" != "$(info MD5SUM | wc -w)" ]; then
+	error "DOWNLOAD and MD5SUM have different numbers of entries"
+fi
+
+if [ -n "$SOURCE" ]; then
+	if [ ! -f "$SOURCE" ]; then
+		error "source $SOURCE not found"
+	else
+		sum=$(md5sum "$SOURCE" | cut -d' ' -f1)
+		case " $(info MD5SUM) $(info MD5SUM_x86_64) " in
+			*" $sum "*) ;;
+			*) error "$SOURCE has MD5 $sum, which isn't in $INFO" ;;
+		esac
+	fi
+fi
+
+grep -q 'TAG=${TAG:-_SBo}' "$PRGNAM.SlackBuild" || error "$PRGNAM.SlackBuild doesn't set TAG=\${TAG:-_SBo}"
+grep -q 'PRINT_PACKAGE_NAME' "$PRGNAM.SlackBuild" || error "$PRGNAM.SlackBuild has no PRINT_PACKAGE_NAME section"
+
+# slack-desc: exactly 11 "$PRGNAM:" lines, text no longer than 71 characters
+desc_lines=$(grep -c "^$PRGNAM:" slack-desc || true)
+[ "$desc_lines" -eq 11 ] || error "slack-desc has $desc_lines '$PRGNAM:' lines, needs exactly 11"
+if grep -q "^$PRGNAM:" slack-desc; then
+	long=$(grep "^$PRGNAM:" slack-desc | awk -v p="$PRGNAM:" '{ t = substr($0, length(p) + 1); sub(/^ /, "", t); if (length(t) > 71) n++ } END { print n + 0 }')
+	[ "$long" -eq 0 ] || error "slack-desc has $long line(s) over 71 characters after '$PRGNAM: '"
+fi
+
+# README: 72 columns, except URLs and commands
+long=$(awk 'length > 72 && $0 !~ /(https?|ftp):\/\// && $0 !~ /^[[:space:]]*[#$] / { print NR }' README | tr '\n' ' ')
+[ -z "$long" ] || warn "README lines over 72 characters: $long"
+
+for f in "${FILES[@]}"; do
+	if grep -Iq $'\r' "$f" 2>/dev/null; then
+		case "$f" in *.patch|*.diff) warn "$f has CRLF line endings" ;; *) error "$f has CRLF line endings" ;; esac
+	fi
+	case "$f" in
+		*.tar|*.tar.*|*.tgz|*.txz|*.tbz|*.zip|*.rpm|*.deb) error "$f looks like a source archive or package; SBo rejects those" ;;
+	esac
+	size=$(stat -c %s "$f")
+	[ "$size" -le 102400 ] || warn "$f is over 100 KB"
+	[ -s "$f" ] || error "$f is empty"
+done
+
+if [ "$ERRORS" -gt 0 ]; then
+	echo "$ERRORS error(s), $WARNINGS warning(s): not packaging $PRGNAM." >&2
+	exit 1
+fi
+
+# --- Package ---------------------------------------------------------------
+
+STAGE=$(mktemp -d)
+trap 'rm -rf "$STAGE"' EXIT
+mkdir "$STAGE/$PRGNAM"
+for f in "${FILES[@]}"; do
+	mkdir -p "$STAGE/$PRGNAM/$(dirname "$f")"
+	cp "$f" "$STAGE/$PRGNAM/$f"
+done
+# SBo: directories 0755, the SlackBuild 0755, everything else 0644
+find "$STAGE/$PRGNAM" -type d -exec chmod 0755 {} +
+find "$STAGE/$PRGNAM" -type f -exec chmod 0644 {} +
+chmod 0755 "$STAGE/$PRGNAM/$PRGNAM.SlackBuild"
+
+if [ "$ALLOW_DIRTY" = yes ] && [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+	MTIME=$(date +%s)
+else
+	MTIME=$(git log -1 --format=%ct)
+fi
+
+OUT=$STAGE/$TARBALL
+tar --sort=name --owner=root --group=root --numeric-owner \
+	--mtime="@$MTIME" -C "$STAGE" -cf - "$PRGNAM" | gzip -9n > "$OUT"
+
+size=$(stat -c %s "$OUT")
+if [ "$size" -gt 1048576 ]; then
+	echo "ERROR: $TARBALL is $size bytes, over the upload form's 1 MB limit" >&2
+	exit 1
+fi
+
+if command -v sbolint >/dev/null 2>&1; then
+	echo "Running sbolint on $TARBALL ..."
+	if ! sbolint "$OUT"; then
+		echo "sbolint found problems: not writing $TARBALL." >&2
+		exit 1
+	fi
+else
+	warn "sbolint isn't installed, so only this script's checks ran. It's in sbo-maintainer-tools, on SlackBuilds.org."
+fi
+
+if [ "$DRY_RUN" = yes ]; then
+	echo "Checks passed ($WARNINGS warning(s)). -n given, so $TARBALL wasn't written."
+	tar -tvzf "$OUT"
+	exit 0
+fi
+
+cp "$OUT" "$TOP/$TARBALL"
+echo "Wrote $TARBALL ($size bytes, $WARNINGS warning(s)) from commit $(git log -1 --format=%h):"
+tar -tvzf "$TOP/$TARBALL"
+if [ "$ALLOW_DIRTY" = yes ]; then
+	echo "Built with -d from uncommitted changes: don't upload this one."
+fi
