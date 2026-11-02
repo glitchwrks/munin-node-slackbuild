@@ -27,7 +27,8 @@
 # tarball too, and its errors and warnings stop the run as well.
 #
 # The tarball is reproducible: files are sorted, owned by root:root, and
-# dated to the last commit, so the same commit gives the same tarball.
+# dated to the last commit that changed one of them, so the same files give
+# the same tarball.
 
 set -eu
 
@@ -189,7 +190,9 @@ chmod 0755 "$STAGE/$PRGNAM/$PRGNAM.SlackBuild"
 if [ "$ALLOW_DIRTY" = yes ] && [ -n "$(git status --porcelain --untracked-files=no)" ]; then
 	MTIME=$(date +%s)
 else
-	MTIME=$(git log -1 --format=%ct)
+	# The last commit that changed a packaged file, so committing the
+	# tarball itself (or changing tools/) doesn't change the next build.
+	MTIME=$(git log -1 --format=%ct -- "${FILES[@]}")
 fi
 
 OUT=$STAGE/$TARBALL
@@ -219,7 +222,7 @@ if [ "$DRY_RUN" = yes ]; then
 fi
 
 cp "$OUT" "$TOP/$TARBALL"
-echo "Wrote $TARBALL ($size bytes, $WARNINGS warning(s)) from commit $(git log -1 --format=%h):"
+echo "Wrote $TARBALL ($size bytes, $WARNINGS warning(s)) from commit $(git log -1 --format=%h -- "${FILES[@]}"):"
 tar -tvzf "$TOP/$TARBALL"
 if [ "$ALLOW_DIRTY" = yes ]; then
 	echo "Built with -d from uncommitted changes: don't upload this one."
